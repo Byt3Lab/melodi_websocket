@@ -1,0 +1,21 @@
+services:
+  melodi_app:
+    image: byt3lab/melodi_websocket:1.0.0
+    build:
+      context: .
+      dockerfile: Dockerfile
+
+    container_name: melodi_websocket_app
+    restart: unless-stopped
+
+    ports:
+      - "${MELODI_PORT:-8070}:8070"
+
+    env_file:
+      - .env
+
+    volumes:
+      - melodi_websocket_storage:/app/storage
+
+volumes:
+  melodi_websocket_storage:

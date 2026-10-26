@@ -1,9 +1,6 @@
 
 import os
 import sys
-
-
-
 import json
 import asyncio
 import logging
@@ -26,6 +23,8 @@ parser = argparse.ArgumentParser(description="Melodi WebSocket Real-Time Service
 parser.add_argument("--secret", type=str, default="melodi_ws_secret_456", help="Internal shared secret key")
 parser.add_argument("--port", type=int, default=8002, help="WebSocket service port")
 parser.add_argument("--melodi-port", type=int, default=3000, help="Main Melodi application port")
+parser.add_argument("--melodi-host", type=str, default="localhost", help="Main Melodi application host")
+parser.add_argument("--melodi-platform", type=str, default="linux", help="Main Melodi application platform")
 parser.add_argument("--env", type=str, default="dev", help="Environment")
 args, unknown = parser.parse_known_args()
 
