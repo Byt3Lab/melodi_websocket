@@ -11,9 +11,6 @@ services:
     ports:
       - "${MELODI_PORT:-8070}:8070"
 
-    env_file:
-      - .env
-
     volumes:
       - melodi_websocket_storage:/app/storage
 
