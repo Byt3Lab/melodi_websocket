@@ -9,12 +9,8 @@ ENV PYTHONUNBUFFERED=1 \
 # Répertoire de travail dans le conteneur
 WORKDIR /app
 
-# Installation des dépendances système requises par psycopg2, reportlab et outils associés
+# Installation des dépendances système minimales (curl pour le healthcheck)
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    gcc \
-    g++ \
-    libpq-dev \
-    zbar-tools \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
@@ -26,12 +22,12 @@ RUN pip install --upgrade pip && \
 # Copie du code source du projet
 COPY . /app/
 
-# Exposition du port Web de MELODI (8000)
+# Exposition du port WebSocket par défaut
 EXPOSE 8070
 
 # Healthcheck de l'application
-HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
-  CMD curl -f http://localhost:8070/ || exit 1
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+  CMD curl -f http://localhost:${PORT:-8070}/internal/health || exit 1
 
 # Commande de démarrage par défaut avec Hypercorn (serveur ASGI de production)
-CMD ["hypercorn", "-b", "0.0.0.0:8070", "-w", "1", "main:app"]
+CMD ["sh", "-c", "exec hypercorn -b 0.0.0.0:${PORT:-8070} -w 1 main:app"]

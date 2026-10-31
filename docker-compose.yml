@@ -1,5 +1,5 @@
 services:
-  melodi_app:
+  melodi_websocket:
     image: byt3lab/melodi_websocket:1.0.0
     build:
       context: .
@@ -8,8 +8,18 @@ services:
     container_name: melodi_websocket_app
     restart: unless-stopped
 
+    environment:
+      PORT: 8070
+      SECRET: ${MELODI_WEBSOCKET_SECRET:-melodi_ws_secret_456}
+      WEBSOCKET_SCALE_MODE: ${WEBSOCKET_SCALE_MODE:-autonome}
+      REDIS_URL: ${REDIS_URL:-}
+      REDIS_HOST: ${REDIS_HOST:-host.docker.internal}
+      REDIS_PORT: ${REDIS_PORT:-6379}
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+
     ports:
-      - "${MELODI_PORT:-8070}:8070"
+      - "${MELODI_WEBSOCKET_PORT:-8070}:8070"
+      - "3002:8070"
 
     volumes:
       - melodi_websocket_storage:/app/storage

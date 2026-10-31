@@ -2,11 +2,14 @@
 import os
 import sys
 import json
+import uuid
 import asyncio
 import logging
 import argparse
+import ipaddress
 from typing import Dict, Set, Any
 from quart import Quart, request, jsonify, websocket
+from pubsub import PubSubBackend, LocalPubSub, RedisPubSub
 
 # Configure logging
 logging.basicConfig(
@@ -18,23 +21,54 @@ logger = logging.getLogger("melodi_websocket")
 
 app = Quart(__name__)
 
+# Node identifier for cluster tracing
+node_id = f"node_{uuid.uuid4().hex[:8]}"
+
+default_port = int(os.environ.get("PORT") or os.environ.get("MELODI_WEBSOCKET_PORT") or 8002)
+default_secret = os.environ.get("SECRET") or os.environ.get("MELODI_WEBSOCKET_SECRET") or "melodi_ws_secret_456"
+default_scale_mode = os.environ.get("WEBSOCKET_SCALE_MODE", "autonome").strip().lower()
+
 # Parse command-line arguments
 parser = argparse.ArgumentParser(description="Melodi WebSocket Real-Time Service")
-parser.add_argument("--secret", type=str, default="melodi_ws_secret_456", help="Internal shared secret key")
-parser.add_argument("--port", type=int, default=8002, help="WebSocket service port")
+parser.add_argument("--secret", type=str, default=default_secret, help="Internal shared secret key")
+parser.add_argument("--port", type=int, default=default_port, help="WebSocket service port")
 parser.add_argument("--melodi-port", type=int, default=3000, help="Main Melodi application port")
 parser.add_argument("--melodi-host", type=str, default="localhost", help="Main Melodi application host")
 parser.add_argument("--melodi-platform", type=str, default="linux", help="Main Melodi application platform")
 parser.add_argument("--env", type=str, default="dev", help="Environment")
+parser.add_argument("--scale-mode", type=str, default=default_scale_mode, choices=["autonome", "scalable", "standalone", "cluster"], help="Scale mode: autonome or scalable")
+parser.add_argument("--redis-url", type=str, default=os.environ.get("REDIS_URL"), help="Redis URL for scalable mode (e.g. redis://:password@host:6379/0)")
+parser.add_argument("--redis-host", type=str, default=os.environ.get("REDIS_HOST", "localhost"), help="Redis host")
+parser.add_argument("--redis-port", type=int, default=int(os.environ.get("REDIS_PORT", "6379")), help="Redis port")
+parser.add_argument("--redis-password", type=str, default=os.environ.get("REDIS_PASSWORD"), help="Redis password")
+parser.add_argument("--redis-db", type=int, default=int(os.environ.get("REDIS_DB", "0")), help="Redis database index")
+parser.add_argument("--redis-channel", type=str, default=os.environ.get("REDIS_WS_CHANNEL", "melodi:ws:events"), help="Redis pub/sub channel name")
 args, unknown = parser.parse_known_args()
+
+scale_mode = "scalable" if args.scale_mode in ("scalable", "cluster") else "autonome"
 
 config = {
     "secret": args.secret,
     "port": args.port,
     "melodi_port": args.melodi_port,
     "env": args.env,
-    "host": "0.0.0.0"
+    "host": "0.0.0.0",
+    "scale_mode": scale_mode,
+    "node_id": node_id
 }
+
+# Initialize Pub/Sub Backend
+if scale_mode == "scalable":
+    pubsub: PubSubBackend = RedisPubSub(
+        redis_url=args.redis_url,
+        host=args.redis_host,
+        port=args.redis_port,
+        password=args.redis_password,
+        db=args.redis_db,
+        channel=args.redis_channel
+    )
+else:
+    pubsub: PubSubBackend = LocalPubSub()
 
 
 class ConnectionManager:
@@ -105,9 +139,9 @@ class ConnectionManager:
         except Exception as e:
             logger.warning(f"[Melodi WebSocket] Send error to socket: {e}")
 
-    async def broadcast(self, message: dict, user_ids: list | None = None, channels: list | None = None) -> int:
+    async def local_broadcast(self, message: dict, user_ids: list | None = None, channels: list | None = None) -> int:
         """
-        Broadcasts message to specific user_ids, subscribed channels, or all clients if neither is specified.
+        Broadcasts message to locally connected clients (matching user_ids or channels, or all).
         """
         target_sockets = set()
 
@@ -131,8 +165,63 @@ class ConnectionManager:
         await asyncio.gather(*tasks, return_exceptions=True)
         return len(target_sockets)
 
+    # Alias for backward compatibility
+    broadcast = local_broadcast
+
 
 manager = ConnectionManager()
+
+
+async def handle_pubsub_message(envelope: dict) -> int:
+    """
+    Callback executed when an event envelope is received from the Pub/Sub bus.
+    Dispatches to local WebSocket clients.
+    """
+    message = envelope.get("message", {})
+    user_ids = envelope.get("user_ids")
+    channels = envelope.get("channels")
+    return await manager.local_broadcast(message, user_ids=user_ids, channels=channels)
+
+
+# Wire up handler for local in-memory bus directly so test clients work out-of-the-box
+if isinstance(pubsub, LocalPubSub):
+    pubsub._on_message = handle_pubsub_message
+
+
+@app.before_serving
+async def startup():
+    """
+    Startup checks and pubsub subscriber loop initialization.
+    If scale_mode is 'scalable', Redis connectivity is strictly verified.
+    If Redis is unreachable or fails authentication, the server MUST NOT start.
+    """
+    logger.info(f"[Melodi WebSocket] Démarrage en mode '{scale_mode}' (node_id={node_id})")
+
+    if scale_mode == "scalable":
+        logger.info("[Melodi WebSocket] Vérification obligatoire de la connexion Redis...")
+        ok, err = await pubsub.check_connection()
+        if not ok:
+            logger.critical(
+                f"[Melodi WebSocket] ÉCHEC CRITIQUE : Impossible de joindre Redis en mode scalable ({err}). "
+                f"Le serveur ne démarrera pas."
+            )
+            sys.exit(1)
+        logger.info("[Melodi WebSocket] Connexion Redis validée avec succès.")
+
+    try:
+        await pubsub.start(handle_pubsub_message)
+        logger.info(f"[Melodi WebSocket] PubSub backend '{pubsub.name}' opérationnel.")
+    except Exception as exc:
+        logger.critical(f"[Melodi WebSocket] Échec d'activation du PubSub : {exc}")
+        sys.exit(1)
+
+
+@app.after_serving
+async def shutdown():
+    """Clean shutdown of PubSub listener and network pools."""
+    logger.info("[Melodi WebSocket] Arrêt du backend PubSub...")
+    await pubsub.stop()
+    logger.info("[Melodi WebSocket] Backend PubSub arrêté.")
 
 
 def authenticate_jwt(token: str) -> dict | None:
@@ -178,27 +267,79 @@ def check_internal_auth(headers) -> bool:
     return False
 
 
+def is_allowed_internal_ip(ip_str: str | None) -> bool:
+    """
+    Checks if an IP belongs to loopback or private networks (e.g. Docker bridge, LAN).
+    """
+    if not ip_str or ip_str in ("127.0.0.1", "::1", "localhost", "testclient", "<local>"):
+        return True
+    try:
+        ip = ipaddress.ip_address(ip_str)
+        return ip.is_loopback or ip.is_private
+    except ValueError:
+        return False
+
+
 @app.before_request
 async def limit_internal_to_localhost():
     """
-    Ensures internal administrative endpoints are accessible only from localhost.
+    Ensures internal administrative endpoints are accessible only from localhost,
+    private internal networks (such as Docker bridge/containers), or with valid secret.
     """
     from quart import has_request_context
     if has_request_context() and request.path.startswith("/internal"):
+        # If request has valid secret, allow it regardless of IP
+        if check_internal_auth(request.headers):
+            return None
+
         remote_ip = request.remote_addr
-        if remote_ip not in ("127.0.0.1", "::1", "localhost"):
-            logger.warning(f"[Melodi WebSocket] Forbidden access attempt from IP: {remote_ip}")
-            return jsonify({"status": "error", "message": "Forbidden: Localhost access only"}), 403
+        allow_private = os.environ.get("ALLOW_PRIVATE_INTERNAL", "true").lower() in ("true", "1", "yes")
+        if allow_private and is_allowed_internal_ip(remote_ip):
+            return None
+
+        logger.warning(f"[Melodi WebSocket] Forbidden access attempt from IP: {remote_ip}")
+        return jsonify({"status": "error", "message": "Forbidden: Private network or localhost access only"}), 403
+
+
+@app.route("/", methods=["GET"])
+@app.route("/health", methods=["GET"])
+async def root_health():
+    """
+    Public health check endpoint for Docker container checks, load balancers, and monitoring.
+    """
+    redis_status = None
+    if scale_mode == "scalable":
+        ok, msg = await pubsub.check_connection()
+        redis_status = "connected" if ok else f"error: {msg}"
+
+    return jsonify({
+        "status": "ok",
+        "service": "melodi_websocket",
+        "version": "1.0.0",
+        "scale_mode": scale_mode,
+        "node_id": node_id,
+        "redis_status": redis_status,
+        "active_connections": len(manager.active_connections),
+        "active_channels": len(manager.channel_sockets)
+    }), 200
 
 
 @app.route("/internal/health", methods=["GET"])
 async def api_health():
     """
-    Health check endpoint.
+    Health check endpoint for internal MELODI ERP status checks.
     """
+    redis_status = None
+    if scale_mode == "scalable":
+        ok, msg = await pubsub.check_connection()
+        redis_status = "connected" if ok else f"error: {msg}"
+
     return jsonify({
         "status": "ok",
         "service": "melodi_websocket",
+        "scale_mode": scale_mode,
+        "node_id": node_id,
+        "redis_status": redis_status,
         "active_connections": len(manager.active_connections),
         "active_channels": len(manager.channel_sockets)
     }), 200
@@ -209,6 +350,8 @@ async def api_health():
 async def api_broadcast():
     """
     Internal broadcast route for the main backend.
+    Dispatches to local clients in 'autonome' mode, or publishes to Redis pub/sub
+    in 'scalable' mode to coordinate across multiple service nodes.
     Payload:
     {
         "event": "stock_updated",
@@ -234,12 +377,21 @@ async def api_broadcast():
         "data": event_data
     }
 
-    count = await manager.broadcast(message, user_ids=user_ids, channels=channels)
+    envelope = {
+        "origin_node": node_id,
+        "message": message,
+        "user_ids": user_ids,
+        "channels": channels
+    }
+
+    count = await pubsub.publish(envelope)
 
     return jsonify({
         "status": "success",
         "recipients_count": count,
-        "event": event_name
+        "event": event_name,
+        "scale_mode": scale_mode,
+        "node_id": node_id
     }), 200
 
 

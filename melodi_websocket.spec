@@ -19,6 +19,9 @@ hiddenimports = [
     'hypercorn.typing',
     'jwt',
     'jwt.algorithms',
+    'pubsub',
+    'redis',
+    'redis.asyncio',
 ]
 
 tmp_ret = collect_all('quart')
