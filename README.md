@@ -1,221 +1,115 @@
-# Melodi WebSocket
+# Melodi WebSocket (Version Go)
 
-Service autonome de WebSocket et de messagerie temps réel pour l'écosystème **MELODI ERP**.
+Service autonome de WebSocket et de messagerie temps réel haute performance pour l'écosystème **MELODI ERP**, développé nativement en **Go**.
+
+> **Note :** Cette branche contient l'implémentation 100% Go de `melodi_websocket` (zéro dépendance Python).
+
+---
 
 ## Fonctionnalités
 
-- Gestion des connexions WebSocket pour les clients web et API (`/ws`).
-- Canaux de diffusion (`broadcast`) et messages ciblés par utilisateur (`user`).
-- Endpoint interne REST (`/internal/broadcast`) sécurisé par clé secrète partagée pour l'émission d'événements depuis MELODI.
-- Endpoints de statut et de santé (`/health`, `/internal/health`).
-- **Administration complète à distance depuis Melodi ERP** (`/internal/config`, `/internal/stats`, `/internal/admin/*`).
-- **Persistance automatique** des configurations dans `storage/config.json`.
-- **Application dynamique à chaud** (période de grâce, niveau de log, clé secrète, basculement PubSub autonome/scalable).
-- Indépendant et découplé du core de MELODI.
-- Compilable en exécutable autonome avec PyInstaller.
+- **Performances & Concurrence Go** : Gestion asynchrone non-bloquante de dizaines de milliers de connexions WebSocket concurrentes via des goroutines légères.
+- **WebSocket Hub & Routage** : Support des canaux de diffusion (`broadcast`) et messages ciblés par utilisateur (`user`).
+- **Reprise de Session & Grâce** : Préservation des sessions et réabonnement automatique lors des reconnexions transitoires (`grace_period_seconds`).
+- **Pub/Sub Distribué (Cluster Redis)** :
+  - **Mode Autonome** : Pub/sub local en mémoire pour serveur unique.
+  - **Mode Scalable** : Cluster Redis Pub/Sub multi-nœuds avec détection et validation obligatoire de la connexion Redis au démarrage.
+- **Administration & Télémétrie ERP** : Endpoints REST `/internal/*` sécurisés par clé secrète pour configuration à chaud, rechargement et statistiques en temps réel.
+- **Conteneurisation Minimale** : Image Docker multi-stage Alpine de ~15 Mo.
 
-## Prérequis et Installation
+---
+
+## Prérequis
+
+- **Go** : 1.22 ou supérieur
+- *(Optionnel pour mode cluster)* : **Redis** 7+
+
+---
+
+## Installation & Démarrage
+
+### 1. En développement (avec Go)
 
 ```bash
-python3 -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
+# Lancement direct avec go run
+go run cmd/server/main.go --port 8070 --secret melodi_ws_secret_456
+
+# Ou via le script start.sh
+./start.sh 8070 melodi_ws_secret_456 3000
 ```
 
-## Lancement
-
-En mode développement :
-```bash
-./start.sh [PORT] [SECRET] [MELODI_PORT]
-# ou
-python3 main.py --port 8002 --secret melodi_ws_secret_456 --melodi-port 3000
-```
-
----
-
-## API d'Administration pour Melodi ERP
-
-Tous les endpoints sous `/internal/` sont sécurisés et accessibles uniquement :
-1. Depuis localhost ou les sous-réseaux IP privés (Docker, LAN).
-2. Avec la clé secrète transmise via le header `X-Internal-Secret: <secret>` ou `Authorization: Bearer <secret>`.
-
-### 1. Gestion des Configurations (`/internal/config`)
-
-#### Consulter la configuration active
-```http
-GET /internal/config
-GET /internal/config?include_secrets=true
-```
-- Par défaut, les secrets (`secret`, `redis_password`) sont masqués (`******` ou format tronqué `mel...456`).
-- Pour obtenir les valeurs en clair dans l'interface ERP, spécifier `?include_secrets=true`.
-
-**Exemple de réponse JSON :**
-```json
-{
-  "status": "ok",
-  "node_id": "node_7a9f82d1",
-  "uptime_seconds": 124.5,
-  "scale_mode": "autonome",
-  "active_connections": 12,
-  "active_channels": 3,
-  "config": {
-    "server": {
-      "host": "0.0.0.0",
-      "port": 8002,
-      "env": "dev",
-      "log_level": "INFO"
-    },
-    "security": {
-      "secret": "mel...456",
-      "secret_configured": true,
-      "allow_private_internal": true
-    },
-    "integration": {
-      "melodi_host": "localhost",
-      "melodi_port": 3000,
-      "melodi_platform": "linux"
-    },
-    "pubsub": {
-      "scale_mode": "autonome",
-      "redis_host": "localhost",
-      "redis_port": 6379,
-      "redis_password_configured": false,
-      "redis_db": 0,
-      "redis_channel": "melodi:ws:events"
-    },
-    "sessions": {
-      "grace_period_seconds": 180,
-      "max_connections": 10000,
-      "ping_interval_seconds": 30
-    },
-    "persistence": {
-      "config_file": "/app/storage/config.json",
-      "file_exists": true
-    }
-  }
-}
-```
-
-#### Modifier la configuration depuis l'ERP
-```http
-POST /internal/config
-Content-Type: application/json
-```
-```json
-{
-  "grace_period_seconds": 120,
-  "log_level": "DEBUG",
-  "scale_mode": "scalable",
-  "redis_host": "127.0.0.1",
-  "redis_port": 6379,
-  "redis_password": "mon_mot_de_passe",
-  "persist": true
-}
-```
-- **Prise d'effet immédiate (sans redémarrage)** : `grace_period_seconds`, `log_level`, `secret`, et basculement dynamique du bus PubSub (`scale_mode`, `redis_*`).
-- **Nécessite un redémarrage** : modification de `port` ou `host`. Le champ `restart_required: true` sera renvoyé dans la réponse.
-
-#### Tester une configuration sans l'appliquer
-```http
-POST /internal/config/test
-Content-Type: application/json
-```
-```json
-{
-  "target": "redis",
-  "redis_host": "localhost",
-  "redis_port": 6379,
-  "redis_password": ""
-}
-```
-Réponse :
-```json
-{
-  "status": "ok",
-  "success": true,
-  "target": "redis",
-  "latency_ms": 1.45,
-  "message": "Redis connection successful on localhost:6379 (PONG)"
-}
-```
-
-#### Réinitialiser la configuration
-```http
-POST /internal/config/reset
-```
-
----
-
-### 2. Métriques et Supervision (`/internal/stats`)
-
-```http
-GET /internal/stats
-```
-Fournit un bilan complet en temps réel :
-- Uptime, PID, mémoire RSS consommée.
-- Nombre de sockets actifs et total accepté depuis le démarrage.
-- Total des messages WebSocket reçus et envoyés.
-- Liste des canaux actifs et nombre d'abonnés par canal.
-- Utilisateurs connectés uniques (`online_user_ids`).
-- Sessions en attente de reconnexion dans la période de grâce.
-
----
-
-### 3. Gestion des Canaux et Clients (`/internal/admin/*`)
-
-- **Lister les canaux actifs** :
-  ```http
-  GET /internal/admin/channels
-  ```
-
-- **Lister les clients connectés** (filtrage optionnel par `?channel=` ou `?user_id=`) :
-  ```http
-  GET /internal/admin/clients
-  GET /internal/admin/clients?channel=orders
-  ```
-
-- **Déconnecter / Expulser un client ou un utilisateur** :
-  ```http
-  POST /internal/admin/clients/disconnect
-  Content-Type: application/json
-
-  {
-    "client_id": "client_13982348",
-    "reason": "Déconnexion demandée par l'administrateur"
-  }
-  ```
-  ou
-  ```json
-  {
-    "user_id": "42",
-    "reason": "Compte suspendu"
-  }
-  ```
-
-- **Purger les sessions en période de grâce** :
-  ```http
-  POST /internal/admin/sessions/clear-grace
-  ```
-
-- **Recharger la configuration depuis le disque** :
-  ```http
-  POST /internal/admin/reload
-  ```
-
-- **Déclencher un redémarrage propre** :
-  ```http
-  POST /internal/admin/restart
-  ```
-
----
-
-## Compilation PyInstaller
-
-Pour générer l'exécutable autonome dans `dist/melodi_websocket` :
+### 2. Compilation de l'exécutable autonome
 
 ```bash
-chmod +x build.sh
+# Génère le binaire statique dans dist/melodi_websocket
 ./build.sh
-# ou
-python3 build.py
+
+# Lancement du binaire autonome
+./dist/melodi_websocket --port 8070 --secret melodi_ws_secret_456
+```
+
+### 3. Exécution avec Docker
+
+```bash
+# Construction de l'image
+docker build -t melodi_websocket:go .
+
+# Démarrage
+docker run -d -p 8070:8070 --name melodi_ws melodi_websocket:go
+```
+
+---
+
+## Tests
+
+La suite de tests unitaires et d'intégration est exécutée via les outils natifs de Go :
+
+```bash
+# Exécution de tous les tests
+go test -v ./...
+
+# Avec rapport de couverture
+go test -cover ./...
+```
+
+---
+
+## API & Endpoints
+
+### 1. Endpoints Publics
+- `GET /` & `GET /health` : Vérification de l'état de santé du service.
+- `GET /ws` : Endpoint de négociation et connexion WebSocket.
+
+### 2. Endpoints Internes Sécurisés (`/internal/*`)
+*Protégés par filtrage IP et header `X-Internal-Secret: <secret>` ou `Authorization: Bearer <secret>`.*
+
+- `POST /internal/broadcast` : Diffuse un événement à un ou plusieurs canaux ou utilisateurs.
+- `GET /internal/health` : Santé détaillée avec état Redis et statistiques mémoire Go (goroutines, heap alloc).
+- `GET /internal/stats` : Métriques de trafic, sessions actives, canaux et uptime.
+- `GET /internal/config` : Lecture de la configuration active (masquée par défaut, en clair avec `?include_secrets=true`).
+- `POST /internal/config` : Mise à jour à chaud de la configuration (période de grâce, niveau de log, Redis, persistance dans `storage/config.json`).
+- `GET /internal/sessions` : Liste des sessions WebSocket et abonnements en mémoire.
+- `POST /internal/admin/restart` : Demande d'arrêt / redémarrage contrôlé par MELODI ERP.
+
+---
+
+## Structure du Projet
+
+```
+.
+├── cmd/
+│   └── server/
+│       └── main.go           # Point d'entrée principal du serveur
+├── internal/
+│   ├── api/                  # Routeur chi, handlers HTTP et WebSocket, tests
+│   ├── auth/                 # Contrôle d'accès, secrets et filtrage d'adresses IP
+│   ├── config/               # Gestionnaire de configuration dynamique et persistance
+│   ├── hub/                  # Gestionnaire de connexions, clients, sessions et grâce
+│   └── pubsub/               # Abstraction Pub/Sub (Local & Redis Cluster)
+├── build.sh                  # Script de compilation binaire statique Go
+├── start.sh                  # Script de démarrage rapide Go
+├── Dockerfile                # Build multi-stage optimisé (Go builder -> Alpine)
+├── docker-compose.yml        # Orchestration locale
+├── go.mod                    # Définition des modules et dépendances Go
+└── go.sum                    # Sommes de contrôle des dépendances
 ```

@@ -3,11 +3,11 @@ set -e
 
 echo "=== Compilation de Melodi WebSocket (Go) ==="
 
-# Nettoyage
+# Nettoyage et création du dossier de distribution
 mkdir -p dist
 
-# Compilation binaire statique optimisé
-go build -ldflags="-s -w" -o dist/melodi_websocket cmd/server/main.go
+# Compilation binaire statique autonome CGO=0
+CGO_ENABLED=0 go build -ldflags="-s -w" -o dist/melodi_websocket cmd/server/main.go
 
 chmod +x dist/melodi_websocket
 

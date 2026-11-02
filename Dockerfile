@@ -1,33 +1,38 @@
-# Image de base Python 3.12 légère
-FROM python:3.12-slim
+# Multi-stage Dockerfile pour Melodi WebSocket (Go)
 
-# Configuration des variables d'environnement
-ENV PYTHONUNBUFFERED=1 \
-    PYTHONDONTWRITEBYTECODE=1 \
-    PORT=8070
+# Étape 1 : Compilation du binaire statique
+FROM golang:1.23-alpine AS builder
 
-# Répertoire de travail dans le conteneur
+WORKDIR /app
+RUN apk add --no-cache git ca-certificates tzdata
+
+# Cache des dépendances Go
+COPY go.mod go.sum ./
+RUN go mod download
+
+# Copie du code source Go
+COPY . .
+
+# Compilation binaire statique CGO=0 sans symboles de debug (-s -w)
+RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /app/melodi_websocket cmd/server/main.go
+
+# Étape 2 : Image minimale de production Alpine
+FROM alpine:latest
+
+RUN apk add --no-cache ca-certificates curl tzdata
 WORKDIR /app
 
-# Installation des dépendances système minimales (curl pour le healthcheck)
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl \
-    && rm -rf /var/lib/apt/lists/*
+# Copie du binaire compilé depuis l'étape de build
+COPY --from=builder /app/melodi_websocket /app/melodi_websocket
+RUN chmod +x /app/melodi_websocket
 
-# Copie et installation des dépendances Python
-COPY requirements.txt /app/
-RUN pip install --upgrade pip && \
-    pip install --no-cache-dir -r requirements.txt
+ENV PORT=8070 \
+    SECRET=melodi_ws_secret_456 \
+    WEBSOCKET_SCALE_MODE=autonome
 
-# Copie du code source du projet
-COPY . /app/
-
-# Exposition du port WebSocket par défaut
 EXPOSE 8070
 
-# Healthcheck de l'application
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
   CMD curl -f http://localhost:${PORT:-8070}/internal/health || exit 1
 
-# Commande de démarrage par défaut avec Hypercorn (serveur ASGI de production)
-CMD ["sh", "-c", "exec hypercorn -b 0.0.0.0:${PORT:-8070} -w 1 main:app"]
+CMD ["/app/melodi_websocket"]

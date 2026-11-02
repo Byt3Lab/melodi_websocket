@@ -1,13 +1,24 @@
-__pycache__/
-*.py[cod]
-*$py.class
-*.so
-.env
-venv/
-ENV/
-env/
-build/
+# Binaires et dossiers de distribution Go
 dist/
 bin/
-*.spec.bak
-.pytest_cache/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Fichiers de configuration générés / runtime
+storage/config.json
+*.db
+cookies.txt
+
+# Variables d'environnement locales
+.env
+.env.local
+
+# Fichiers système et éditeurs
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*~
