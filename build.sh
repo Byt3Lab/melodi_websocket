@@ -1,19 +1,14 @@
 #!/usr/bin/env bash
 set -e
 
-echo "=== Compilation de Melodi WebSocket (PyInstaller) ==="
-
-# Activer venv si présent
-if [ -d "venv" ]; then
-    source venv/bin/activate
-fi
+echo "=== Compilation de Melodi WebSocket (Go) ==="
 
 # Nettoyage
-rm -rf build dist
+mkdir -p dist
 
-# Compilation
-pyinstaller --clean melodi_websocket.spec
+# Compilation binaire statique optimisé
+go build -ldflags="-s -w" -o dist/melodi_websocket cmd/server/main.go
 
-chmod +x dist/melodi_websocket 2>/dev/null || true
+chmod +x dist/melodi_websocket
 
-echo "=== Compilation terminée ! Exécutable dans dist/melodi_websocket ==="
+echo "=== Compilation terminée ! Exécutable autonome dans dist/melodi_websocket ==="

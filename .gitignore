@@ -8,5 +8,6 @@ ENV/
 env/
 build/
 dist/
+bin/
 *.spec.bak
 .pytest_cache/

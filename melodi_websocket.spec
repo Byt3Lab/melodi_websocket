@@ -20,6 +20,7 @@ hiddenimports = [
     'jwt',
     'jwt.algorithms',
     'pubsub',
+    'config_manager',
     'redis',
     'redis.asyncio',
 ]

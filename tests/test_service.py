@@ -107,3 +107,54 @@ async def test_websocket_ping_pong_and_channel(test_app):
         event_msg = json.loads(event_raw)
         assert event_msg["event"] == "stock_alert"
         assert event_msg["data"]["sku"] == "ITEM-123"
+
+
+@pytest.mark.anyio
+async def test_websocket_session_resumption_and_presence(test_app):
+    client = test_app.test_client()
+    session_id = "test_sess_abc123"
+
+    # Connect with session_id
+    async with client.websocket(f"/ws?session_id={session_id}") as ws1:
+        init_raw = await ws1.receive()
+        init_msg = json.loads(init_raw)
+        assert init_msg["event"] == "connected"
+        assert init_msg["data"]["session_id"] == session_id
+        assert init_msg["data"]["grace_period_seconds"] == 180
+
+        # Subscribe to a channel
+        await ws1.send(json.dumps({"action": "subscribe", "channel": "chat:general"}))
+        await ws1.receive()
+
+    # ws1 is now closed, but session is in 3-minute grace period!
+    assert session_id in manager.sessions
+    assert manager.sessions[session_id]["disconnect_task"] is not None
+
+    # Check presence endpoint shows the session in grace period
+    res = await client.get("/internal/presence")
+    assert res.status_code == 200
+    pres_data = await res.get_json()
+    assert pres_data["status"] == "ok"
+    assert any(s["session_id"] == session_id for s in pres_data["grace_sessions"])
+
+    # Reconnect with same session_id (simulating page reload F5)
+    async with client.websocket(f"/ws?session_id={session_id}") as ws2:
+        init2_raw = await ws2.receive()
+        init2_msg = json.loads(init2_raw)
+        assert init2_msg["event"] == "connected"
+
+        # Disconnect task should have been cancelled and channel restored
+        assert manager.sessions[session_id]["disconnect_task"] is None
+
+        # Verify broadcast still reaches restored subscription
+        headers = {"X-Internal-Secret": "melodi_ws_secret_456"}
+        await client.post("/internal/broadcast", json={
+            "event": "new_chat_msg",
+            "data": {"text": "Hello again"},
+            "channels": ["chat:general"]
+        }, headers=headers)
+
+        msg_raw = await ws2.receive()
+        msg = json.loads(msg_raw)
+        assert msg["event"] == "new_chat_msg"
+        assert msg["data"]["text"] == "Hello again"
