@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Démarrage de Melodi WebSocket
 
-PORT="${1:-${PORT:-3002}}"
+PORT="${1:-${PORT:-8070}}"
 PLATFORM="${PLATFORM:-linux}"
 SECRET="${2:-${SECRET:-melodi_ws_secret_456}}"
 MELODI_PORT="${3:-${MELODI_PORT:-3000}}"
